@@ -1,0 +1,13 @@
+[package]
+name = "shellkick"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fastnes = { path = "fastnes" }
+femtovg = { version = "0.6.0", features = ["glutin"] }
+glutin = "0.30.7"
+glutin-winit = "0.3.0"
+raw-window-handle = "0.5.2"
+rlua = "0.19.4"
+winit = "0.28.3"

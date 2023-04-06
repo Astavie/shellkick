@@ -1,0 +1,6 @@
+[submodule "luanim"]
+	path = luanim
+	url = https://github.com/Astavie/luanim.git
+[submodule "fastnes"]
+	path = fastnes
+	url = https://github.com/Astavie/fastnes
