@@ -5,7 +5,9 @@ use std::{
 };
 
 use femtovg::{Canvas, Color, Paint, Path, Renderer, Transform2D};
-use rlua::{Context, FromLuaMulti, Function, Lua, MultiValue, Result, Table};
+use rlua::{
+    Context, FromLua, FromLuaMulti, Function, Lua, MultiValue, Result, Scope, Table, ToLua, Value,
+};
 
 fn load_file<'lua>(ctx: Context<'lua>, name: &str) -> Result<Table<'lua>> {
     ctx.load(&read_to_string("luanim/src/".to_owned() + name + ".lua").unwrap())
@@ -37,7 +39,8 @@ pub struct Screen<T: Renderer> {
 }
 
 pub struct Animation<T: Renderer> {
-    custom: Box<dyn Fn(Context, u8, MultiValue, &mut Screen<T>)>,
+    custom:
+        Box<dyn for<'lua> Fn(Context<'lua>, u8, MultiValue<'lua>, &mut Screen<T>) -> Result<()>>,
     lua: Lua,
     screen: Screen<T>,
 }
@@ -128,32 +131,46 @@ impl Mul<Vec2> for f32 {
     }
 }
 
+pub struct AnimationValues<'lua>(Context<'lua>, Table<'lua>);
+
+impl<'lua> AnimationValues<'lua> {
+    pub fn set(&self, key: impl ToLua<'lua>, value: impl ToLua<'lua>) -> Result<()> {
+        let signal: Function = self.1.get(key)?;
+        signal.call(value)?;
+        Ok(())
+    }
+    pub fn get<V: FromLua<'lua>>(&self, key: impl ToLua<'lua>) -> Result<V> {
+        let signal: Function = self.1.get(key)?;
+        let val: Value = signal.call(())?;
+        V::from_lua(val, self.0)
+    }
+}
+
 impl<T: Renderer> Animation<T> {
     pub fn advance_time(&mut self, time: f32) -> Result<()> {
+        // clear canvas
         let width = self.screen.canvas.width() as u32;
         let height = self.screen.canvas.height() as u32;
         self.screen
             .canvas
             .clear_rect(0, 0, width, height, Color::black());
 
+        // draw frame
         self.lua.context(|ctx| {
             let globals = ctx.globals();
             let screen = RefCell::new(&mut self.screen);
 
             ctx.scope(|scope| {
                 // create canvas global
-                globals.get::<_, Table>("canvas")?.set(
-                    "measure",
-                    scope.create_function(|_, (text, _font): (String, Option<String>)| {
-                        Ok(screen
-                            .borrow()
-                            .canvas
-                            .measure_text(0.0, 0.0, text, &Paint::color(Color::white()))
-                            .unwrap()
-                            .width()
-                            * TEXT_SCALE)
-                    })?,
-                )?;
+                set_measure(&ctx, scope, |text, _font| {
+                    screen
+                        .borrow()
+                        .canvas
+                        .measure_text(0.0, 0.0, text, &Paint::color(Color::white()))
+                        .unwrap()
+                        .width()
+                        * TEXT_SCALE
+                })?;
 
                 // create emit function
                 let emit = scope.create_function_mut(|ctx, (instr, args): (u8, MultiValue)| {
@@ -171,6 +188,14 @@ impl<T: Renderer> Animation<T> {
         self.screen.canvas.flush();
         Ok(())
     }
+
+    pub fn values(
+        &self,
+        f: impl for<'lua> Fn(Context<'lua>, AnimationValues<'lua>) -> Result<()>,
+    ) -> Result<()> {
+        self.lua
+            .context(|ctx| f(ctx, AnimationValues(ctx, ctx.globals().get("$value")?)))
+    }
 }
 
 fn instruction<'lua, T: Renderer>(
@@ -178,7 +203,7 @@ fn instruction<'lua, T: Renderer>(
     instr: u8,
     args: MultiValue<'lua>,
     screen: &mut Screen<T>,
-    custom: impl Fn(Context, u8, MultiValue, &mut Screen<T>),
+    custom: impl Fn(Context<'lua>, u8, MultiValue<'lua>, &mut Screen<T>) -> Result<()>,
 ) -> Result<()> {
     match instr {
         0 => {
@@ -258,7 +283,7 @@ fn instruction<'lua, T: Renderer>(
                 screen.draw_ellipse(focus1, focus2, sum);
             }
         }
-        _ => custom(ctx, instr, args, screen),
+        _ => custom(ctx, instr, args, screen)?,
     };
     Ok(())
 }
@@ -324,29 +349,52 @@ impl<T: Renderer> Screen<T> {
 pub fn animate<T: Renderer + 'static>(
     file: String,
     canvas: Canvas<T>,
-    custom: impl Fn(Context, u8, MultiValue, &mut Screen<T>) + 'static,
+    custom: impl for<'lua> Fn(Context<'lua>, u8, MultiValue<'lua>, &mut Screen<T>) -> Result<()>
+        + 'static,
+    values: impl for<'lua> Fn(Context<'lua>) -> Result<Table<'lua>>,
 ) -> Result<Animation<T>> {
     let lua = unsafe { Lua::new_with_debug() };
 
     lua.context(|ctx| {
+        // libs
         load_libs(ctx)?;
 
         let globals = ctx.globals();
         let g_canvas = ctx.create_table()?;
+
+        // canvas signals
+        let signal: Table = globals.get("signal")?;
+        let signal: Function = signal.get("signal")?;
+
+        let signals = ctx.create_table()?;
+        for pair in values(ctx)?.pairs() {
+            let (key, value): (Value, Value) = pair?;
+            let value: Function = signal.call(value)?;
+            signals.set(key, value)?;
+        }
+
+        globals.set("$value", signals)?;
+
+        g_canvas.set(
+            "signal",
+            ctx.create_function(|ctx, name: String| {
+                ctx.globals()
+                    .get::<_, Table>("$value")?
+                    .get::<_, Function>(name)
+            })?,
+        )?;
+
+        // animation
         globals.set("canvas", g_canvas)?;
 
         let anim = ctx.scope(|scope| {
-            // create canvas global
-            globals.get::<_, Table>("canvas")?.set(
-                "measure",
-                scope.create_function(|_, (text, _font): (String, Option<String>)| {
-                    Ok(canvas
-                        .measure_text(0.0, 0.0, text, &Paint::color(Color::white()))
-                        .unwrap()
-                        .width()
-                        * TEXT_SCALE)
-                })?,
-            )?;
+            set_measure(&ctx, scope, |text, _font| {
+                canvas
+                    .measure_text(0.0, 0.0, text, &Paint::color(Color::white()))
+                    .unwrap()
+                    .width()
+                    * TEXT_SCALE
+            })?;
 
             // load animation
             ctx.load(&read_to_string(file).unwrap()).eval::<Function>()
@@ -376,4 +424,20 @@ pub fn animate<T: Renderer + 'static>(
             path: None,
         },
     })
+}
+
+fn set_measure<'lua, 'scope>(
+    ctx: &Context<'lua>,
+    scope: &Scope<'lua, 'scope>,
+    measure: impl Fn(String, Option<String>) -> f32 + 'scope,
+) -> Result<()> {
+    let globals = ctx.globals();
+    let table: Table = globals.get("canvas")?;
+    table.set(
+        "measure",
+        scope.create_function(move |_, (text, font): (String, Option<String>)| {
+            Ok(measure(text, font))
+        })?,
+    )?;
+    Ok(())
 }
