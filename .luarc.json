@@ -3,6 +3,10 @@
     "Lua.diagnostics.globals": [
         "shapes",
         "vector",
-        "canvas"
+        "canvas",
+        "ir",
+        "tweens",
+        "signal",
+        "luanim"
     ]
 }

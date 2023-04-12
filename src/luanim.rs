@@ -11,7 +11,7 @@ use rlua::{
 
 fn load_file<'lua>(ctx: Context<'lua>, name: &str) -> Result<Table<'lua>> {
     ctx.load(&read_to_string("luanim/src/".to_owned() + name + ".lua").unwrap())
-        .set_name(name)?
+        .set_name(&(name.to_owned() + ".lua"))?
         .eval::<Table>()
 }
 
@@ -378,9 +378,12 @@ pub fn animate<T: Renderer + 'static>(
         g_canvas.set(
             "signal",
             ctx.create_function(|ctx, name: String| {
-                ctx.globals()
-                    .get::<_, Table>("$value")?
-                    .get::<_, Function>(name)
+                ctx.create_function(move |ctx, ()| {
+                    ctx.globals()
+                        .get::<_, Table>("$value")?
+                        .get::<_, Function>(name.clone())?
+                        .call::<_, Value>(())
+                })
             })?,
         )?;
 
@@ -397,7 +400,9 @@ pub fn animate<T: Renderer + 'static>(
             })?;
 
             // load animation
-            ctx.load(&read_to_string(file).unwrap()).eval::<Function>()
+            ctx.load(&read_to_string(file.clone()).unwrap())
+                .set_name(&file)?
+                .eval::<Function>()
         })?;
 
         globals.set("$anim", anim)?;
