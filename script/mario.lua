@@ -54,16 +54,19 @@ local vec2 = vector.vec2
 local marios = canvas.signal("marios")
 local count = #(marios())
 local trait_names = {
-  "patient", "random", "playful", "twitchy", "smart"
+  "patient", "bold", "twitchy", "jumpy"
 }
 
 local function personality(instance, key)
   return shapes.Text(nil, function()
     local mario = marios()[instance()]
-    return mario.personality[key] .. ""
+    if key == "patient" or key == "bold" then
+      return string.format("%2d", mario.personality[key])
+    else
+      return string.format(" %.2f", mario.personality[key])
+    end
   end)
 end
-
 
 local function grid(n, m, width, height, f)
   local parent = shapes.Shape(vec2(-width / 2, -height / 2))
@@ -109,7 +112,7 @@ local function focus_game(scene, root)
   while true do
     -- always focus on #1
     -- refresh every half second
-    scene:wait(0.5)
+    scene:wait(0.1)
 
     local max = marios()[focus.instance()].fitness
 
@@ -177,6 +180,7 @@ local function leaderboard(scene, root)
   for i = 1, count do
     indices[i] = i
   end
+  local indices_signal = signal(indices)
 
   scene:parallel(function()
     -- refresh leaderboard every second
@@ -200,7 +204,8 @@ local function leaderboard(scene, root)
     end
 
     while true do
-      scene:wait(1)
+      scene:wait(0.1)
+
       for i = 1, count do
         local ci = i
         ::redo::
@@ -209,6 +214,8 @@ local function leaderboard(scene, root)
           goto redo
         end
       end
+
+      indices_signal(indices)
     end
   end)
 
@@ -220,29 +227,39 @@ local function leaderboard(scene, root)
       if position > count then
         return shapes.Shape()
       else
-        local index = indices[position]
+        local index = function() return indices_signal()[position] end
         local playback = Playback.new({
           x = -signal.me.width / 2,
           y = -signal.me.height / 2
         }, index, 1)
 
-        local traits = grid(1, #trait_names + 1, 150, 144 / 2, function(_, y)
+        local traits = grid(2, #trait_names + 2, 140, 144 / 2, function(x, y)
+          if y < 3 and x == 2 then
+            return shapes.Shape()
+          end
+
           if y == 1 then
-            return shapes.Text(nil, "#" .. index, 1.5)
+            return shapes.Text(nil, "#" .. position, 1.5)
+          elseif y == 2 then
+            return shapes.Text(nil, "MARIO #" .. index)
           else
-            return personality(function() return index end, trait_names[y - 1])
+            if x == 1 then
+              return shapes.Text(nil, trait_names[y - 2])
+            else
+              return personality(index, trait_names[y - 2])
+            end
           end
         end)
         traits.pos({
-          x = 35,
-          y = 10,
+          x = -5,
+          y = 15,
         })
         traits.scale(vec2(0.3))
         playback:add_child(traits)
 
         return playback
       end
-    end), vec2(-512, 0), 1)
+    end), vec2(0, -144), 0)
 
     scene:wait(5)
 

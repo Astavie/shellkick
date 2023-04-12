@@ -50,36 +50,37 @@ unsafe fn as_rgba<const N: usize>(p: &[Color; N]) -> &[RGBA8] {
 #[derive(Clone, Debug)]
 struct Personality {
     patient: u32, // stuck iterations before random movement
-    random: u32,  // frames per random movement
+    bold: u32,    // frames per random movement
     playful: u32, // frames per regular movement
-    twitchy: f32, // likelyhood of button switch per frame
-    smart: u32,   // amount of paths to try
+    twitchy: f32, // likelyhood of direction switch per frame
+    jumpy: f32,   // likelyhood of A switch per frame
+
+    confident: u32, // iterations per save state
 }
 
 struct Mario {
     personality: Personality,
-    revert_stack: Vec<u32>,
     being_random: Option<u32>,
 
     stuck_count: u32,
-    inputs_past: Vec<u8>,
     inputs_future: VecDeque<u8>,
+    last_input: u8,
+    next_state: u32,
 
-    states: Vec<NES>,
+    states: VecDeque<NES>,
 }
 
 fn next_input(prev: u8, personality: &Personality) -> u8 {
     let mut rng = rand::thread_rng();
     let mut next = prev;
-    while rng.gen_range(0.0..1.0) < personality.twitchy {
-        let mut flip = 1 << rng.gen_range(0..6);
-        if flip > 0b00000011 {
-            // skip start and select
-            flip = flip << 2
-        }
-        next ^= flip;
+    if rng.gen_range(0.0..1.0) < personality.twitchy {
+        let dir = 1 << rng.gen_range(4..8);
+        next = (next & 0b00001111) | dir;
     }
-    next
+    if rng.gen_range(0.0..1.0) < personality.jumpy {
+        next ^= 0b1
+    }
+    next | 0b10 // always press B
 }
 
 #[derive(PartialEq)]
@@ -150,27 +151,36 @@ fn scroll(nes: &mut NES) -> u32 {
 
 fn next_frame(mario: &mut Mario) {
     let input = Arc::new(AtomicU8::new(0));
-    let mut nes = mario.states.pop().unwrap();
+    let mut nes = mario.states.pop_back().unwrap();
     nes.set_controllers(Controllers::standard(&input));
     let mut score = fitness(&mut nes);
 
     // get new inputs
     if mario.inputs_future.is_empty() {
-        mario.states.push(nes.clone());
-
         if score == Fitness::Dying(false) || score == Fitness::Dying(true) {
             // do revert
-            revert(
-                mario,
-                if score == Fitness::Dying(true) {
-                    360 * 20 / mario.personality.playful
-                } else {
-                    2
-                },
-            );
-            nes = mario.states.pop().unwrap();
+            let frames = if score == Fitness::Dying(true) {
+                360 * 20
+            } else {
+                0
+            };
+            let frame = nes.frame_no() - frames;
+            while nes.frame_no() >= frame && !mario.states.is_empty() {
+                nes = mario.states.pop_back().unwrap();
+            }
             nes.set_controllers(Controllers::standard(&input));
             score = fitness(&mut nes);
+
+            mario.next_state = mario.personality.confident;
+        } else if mario.next_state == 0 {
+            mario.states.push_back(nes.clone());
+            mario.next_state = mario.personality.confident;
+
+            if mario.states.len() > 360 {
+                mario.states.pop_front();
+            }
+        } else {
+            mario.next_state -= 1;
         }
 
         if let Some(num) = mario.being_random.as_mut() {
@@ -180,7 +190,7 @@ fn next_frame(mario: &mut Mario) {
                 mario.being_random = None;
             }
 
-            let mut last = *mario.inputs_past.last().unwrap();
+            let mut last = mario.last_input;
             for _ in 0..mario.personality.playful {
                 last = next_input(last, &mario.personality);
                 mario.inputs_future.push_back(last);
@@ -188,21 +198,19 @@ fn next_frame(mario: &mut Mario) {
         } else {
             // Regular input
             let mut best_result = Fitness::Dying(false);
+            let input = Arc::new(AtomicU8::new(0));
 
-            for i in 0..mario.personality.smart {
+            for _ in 0..3 {
                 // generate inputs
                 let mut list = VecDeque::new();
-                let mut last = *mario.inputs_past.last().unwrap();
+                let mut last = mario.last_input;
                 for _ in 0..mario.personality.playful {
-                    if i > 0 {
-                        last = next_input(last, &mario.personality);
-                    }
+                    last = next_input(last, &mario.personality);
                     list.push_back(last);
                 }
 
                 // run
                 let mut cloned = nes.clone();
-                let input = Arc::new(AtomicU8::new(0));
                 cloned.set_controllers(Controllers::standard(&input));
 
                 for item in list.iter().copied() {
@@ -223,45 +231,22 @@ fn next_frame(mario: &mut Mario) {
                 mario.stuck_count += 1;
                 if mario.stuck_count >= mario.personality.patient {
                     mario.stuck_count = 0;
-                    mario.being_random = Some(mario.personality.random);
+                    mario.being_random = Some(mario.personality.bold);
                 }
             }
         }
-
-        mario.revert_stack.push(0);
     }
 
     // set input
     let item = mario.inputs_future.pop_front().unwrap();
-    mario.inputs_past.push(item);
+    mario.last_input = item;
     input.store(item, Ordering::Relaxed);
 
     // next frame
     nes.next_frame();
 
     // push nes back in
-    mario.states.push(nes);
-}
-
-fn revert(mario: &mut Mario, amount: u32) {
-    // Revert iteration
-    for _ in 0..amount {
-        mario.revert_stack.pop();
-        mario.states.pop();
-        for _ in 0..mario.personality.playful {
-            mario.inputs_past.pop();
-        }
-    }
-
-    while *mario.revert_stack.last().unwrap() >= 1 {
-        mario.revert_stack.pop();
-        mario.states.pop();
-        for _ in 0..mario.personality.playful {
-            mario.inputs_past.pop();
-        }
-    }
-
-    *mario.revert_stack.last_mut().unwrap() += 1;
+    mario.states.push_back(nes);
 }
 
 fn main() -> Result<()> {
@@ -297,25 +282,27 @@ fn main() -> Result<()> {
             .unwrap()
     };
 
-    let mut marios = VecDeque::new();
+    let mut marios = Vec::new();
     let mut backgrounds = Vec::new();
     let mut sprites = Vec::new();
     let mut scores = Vec::new();
 
     let mut rng = rand::thread_rng();
-    for _ in 0..64 {
+    for _ in 0..256 {
         let mut mario = Mario {
             personality: Personality {
-                patient: rng.gen_range(10..30),   // 3,
-                random: rng.gen_range(1..10),     // 10,
-                playful: rng.gen_range(8..12),    // 20,
-                twitchy: rng.gen_range(0.2..0.9), // 0.5,
-                smart: 2,                         // 4,
+                patient: rng.gen_range(1..10),
+                bold: rng.gen_range(1..10),
+                twitchy: rng.gen_range(0.01..0.2),
+                jumpy: rng.gen_range(0.01..0.2),
+
+                playful: 10,
+                confident: 1,
             },
+            next_state: 0,
             being_random: None,
-            revert_stack: vec![0],
             stuck_count: 0,
-            inputs_past: vec![],
+            last_input: 0,
             inputs_future: vec![
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 0, 0, 0, 0, 0b00001000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -329,12 +316,13 @@ fn main() -> Result<()> {
                 "rom/smb.nes",
                 Controllers::disconnected(),
                 FastPPU::new(),
-            )],
+            )]
+            .into(),
         };
         for _ in 0..rng.gen_range(0..20) {
             mario.inputs_future.push_back(0)
         }
-        marios.push_back(mario);
+        marios.push(Arc::new(Mutex::new(mario)));
 
         backgrounds.push(
             [Color {
@@ -354,68 +342,29 @@ fn main() -> Result<()> {
         );
         scores.push(0u32);
     }
-    let backgrounds = Arc::new(Mutex::new(backgrounds));
-    let sprites = Arc::new(Mutex::new(sprites));
-    let scores = Arc::new(Mutex::new(scores));
-    let personalities: Vec<Personality> = marios
-        .iter()
-        .map(|mario| mario.personality.clone())
-        .collect();
 
-    let scores_clone = scores.clone();
-    let bg_clone = backgrounds.clone();
-    let spr_clone = sprites.clone();
+    let marios_clone = marios.clone();
     thread::spawn(move || {
-        let count = 12;
-        let pool = ThreadPool::new(count);
+        let pool = ThreadPool::new(12);
+        let mut loop_helper = LoopHelper::builder().build_with_target_rate(60.0);
 
-        let mut subdivides = Vec::new();
-        let amount = marios.len();
-        for i in 0..count {
-            let mut submarios = Vec::new();
-            for j in 0..(amount - 1) / count + 1 {
-                if marios.is_empty() {
-                    break;
-                }
-                submarios.push((
-                    i * ((amount - 1) / count + 1) + j,
-                    marios.pop_front().unwrap(),
-                ))
+        loop {
+            println!("{:?}", loop_helper.loop_start());
+
+            for mario in marios_clone.iter() {
+                let mario = mario.clone();
+                pool.execute(move || {
+                    let mut mario = mario.lock().unwrap();
+                    next_frame(&mut mario);
+                });
             }
-            subdivides.push(submarios);
-        }
 
-        while let Some(mut submarios) = subdivides.pop() {
-            let scores_clone = scores_clone.clone();
-            let bg_clone = bg_clone.clone();
-            let spr_clone = spr_clone.clone();
-            pool.execute(move || {
-                let mut loop_helper = LoopHelper::builder().build_with_target_rate(60.0);
-
-                loop {
-                    println!("{:?}", loop_helper.loop_start());
-                    for (i, mario) in submarios.iter_mut() {
-                        next_frame(mario);
-
-                        let nes = mario.states.last_mut().unwrap();
-
-                        scores_clone.lock().unwrap()[*i] = scroll(nes);
-                        bg_clone.lock().unwrap()[*i] = nes.frame(DrawOptions::Background);
-                        spr_clone.lock().unwrap()[*i] = nes.frame(DrawOptions::Sprites);
-                    }
-                    loop_helper.loop_sleep();
-                }
-            });
+            pool.join();
+            loop_helper.loop_sleep();
         }
     });
 
-    let mut screen = animate(
-        "script/mario.lua",
-        config.clone(),
-        backgrounds.clone(),
-        sprites.clone(),
-        &personalities,
-    )?;
+    let mut screen = animate("script/mario.lua", config.clone(), &marios)?;
 
     let (tx_event, rx_event) = mpsc::channel();
     let mut watcher = notify::recommended_watcher(tx_event).unwrap();
@@ -447,13 +396,7 @@ fn main() -> Result<()> {
             }
             if refresh {
                 // refresh screen
-                match animate(
-                    "script/mario.lua",
-                    config.clone(),
-                    backgrounds.clone(),
-                    sprites.clone(),
-                    &personalities,
-                ) {
+                match animate("script/mario.lua", config.clone(), &marios) {
                     Ok(s) => {
                         screen = s;
                         time = Instant::now();
@@ -467,13 +410,18 @@ fn main() -> Result<()> {
                     let frame: u32 = table.get("frame")?;
                     table.set("frame", frame + 1)?;
 
-                    let marios: Table = table.get("marios")?;
-                    for (i, result) in scores.lock().unwrap().iter().enumerate() {
+                    let results: Table = table.get("marios")?;
+                    for (i, mario) in marios.iter().enumerate() {
+                        let mut mario = mario.lock().unwrap();
+                        let len = mario.states.len();
+                        let nes = &mut mario.states[len - 1];
+                        let result = scroll(nes);
+
                         let index = i + 1;
-                        let mario: Table = marios.get(index)?;
-                        mario.set("fitness", *result)?;
+                        let mario_table: Table = results.get(index)?;
+                        mario_table.set("fitness", result)?;
                     }
-                    table.set("marios", marios)?;
+                    table.set("marios", results)?;
                     Ok(())
                 })
                 .unwrap();
@@ -491,15 +439,18 @@ fn main() -> Result<()> {
 fn animate(
     path: &str,
     config: Config,
-    backgrounds: Arc<Mutex<Vec<[Color; 61440]>>>,
-    sprites: Arc<Mutex<Vec<[Color; 61440]>>>,
-    marios: &Vec<Personality>,
+    marios: &Vec<Arc<Mutex<Mario>>>,
 ) -> Result<Animation<OpenGl>> {
     let opengl = OpenGl::new_from_glutin_display(&config.display()).unwrap();
     let mut canvas = Canvas::new(opengl).unwrap();
     canvas.set_size(WIDTH as u32, HEIGHT as u32, 1.0);
     canvas.add_font("res/pressstart.ttf").unwrap();
 
+    let personalities: Vec<_> = marios
+        .iter()
+        .map(|mario| mario.lock().unwrap().personality.clone())
+        .collect();
+    let marios = marios.clone();
     luanim::animate(
         path.to_owned(),
         canvas,
@@ -510,10 +461,11 @@ fn animate(
                     FromLuaMulti::from_lua_multi(args, ctx)?;
 
                 let image = {
-                    let frames = backgrounds.lock().unwrap();
-                    let frame = &frames[instance - 1];
+                    let mario = marios[instance - 1].lock().unwrap();
+                    let nes = &mario.states[mario.states.len() - 1];
+                    let frame = nes.frame(DrawOptions::Background);
 
-                    let img = Img::new(unsafe { as_rgba(frame) }, 256, 240);
+                    let img = Img::new(unsafe { as_rgba(&frame) }, 256, 240);
                     screen
                         .canvas
                         .create_image(img, ImageFlags::NEAREST)
@@ -549,10 +501,11 @@ fn animate(
                 ) = FromLuaMulti::from_lua_multi(args, ctx)?;
 
                 let image = {
-                    let frames = sprites.lock().unwrap();
-                    let frame = &frames[instance - 1];
+                    let mario = marios[instance - 1].lock().unwrap();
+                    let nes = &mario.states[mario.states.len() - 1];
+                    let frame = nes.frame(DrawOptions::Sprites);
 
-                    let img = Img::new(unsafe { as_rgba(frame) }, 256, 240);
+                    let img = Img::new(unsafe { as_rgba(&frame) }, 256, 240);
                     screen
                         .canvas
                         .create_image(img, ImageFlags::NEAREST)
@@ -597,13 +550,13 @@ fn animate(
             values.set("frame", 0)?;
 
             let marios_data = ctx.create_table()?;
-            for (i, mario) in marios.iter().enumerate() {
+            for (i, mario) in personalities.iter().enumerate() {
                 let personality = ctx.create_table()?;
                 personality.set("patient", mario.patient)?;
-                personality.set("random", mario.random)?;
+                personality.set("bold", mario.bold)?;
                 personality.set("playful", mario.playful)?;
                 personality.set("twitchy", mario.twitchy)?;
-                personality.set("smart", mario.smart)?;
+                personality.set("jumpy", mario.jumpy)?;
 
                 let data = ctx.create_table()?;
                 data.set("personality", personality)?;
