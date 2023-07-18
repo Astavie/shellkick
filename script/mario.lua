@@ -58,6 +58,7 @@ local trait_names = {
 }
 
 local function personality(instance, key)
+  instance = signal.as_callable(instance)
   return shapes.Text(nil, function()
     local mario = marios()[instance()]
     if key == "patient" or key == "bold" then
@@ -83,7 +84,7 @@ end
 local function focus_game(scene, root)
   local focus = Playback.new({
     x = -182 - signal.me.width / 2,
-    y = -signal.me.height / 2 - 144 / 2
+    y = -signal.me.height / 2 - 60 / 2
   }, 1, 2)
 
   local ghosts = shapes.Shape()
@@ -109,17 +110,38 @@ local function focus_game(scene, root)
   root:add_child(focus)
   root:add_child(traits)
 
+  local two = Playback.new(vec2(100, -60/2 - 64))
+  local three = Playback.new(vec2(100, -60/2))
+  root:add_child(two)
+  root:add_child(three)
+
   while true do
     -- always focus on #1
     -- refresh every half second
     scene:wait(0.1)
 
     local max = marios()[focus.instance()].fitness
-
     for i, mario in ipairs(marios()) do
       if mario.fitness > max then
         focus.instance(i)
         max = mario.fitness
+      end
+    end
+
+    local next = 0
+    for i, mario in ipairs(marios()) do
+      if mario.fitness > next and mario.fitness < max then
+        two.instance(i)
+        next = mario.fitness
+      end
+    end
+
+    max = next
+    local next = 0
+    for i, mario in ipairs(marios()) do
+      if mario.fitness > next and mario.fitness < max then
+        three.instance(i)
+        next = mario.fitness
       end
     end
 
@@ -147,125 +169,117 @@ local function focus_game(scene, root)
   end
 end
 
-local function swap(parent, a, b, dir, time, easing)
-  local offset = signal(vec2(0))
-  local swap_a = shapes.Shape(offset)
-  local swap_b = shapes.Shape(offset - dir)
-
-  swap_a:add_child(a)
-  swap_b:add_child(b)
-
-  parent:add_child(swap_a)
-  parent:add_child(swap_b)
-
-  offset(dir, time, easing)
-
-  parent:add_child(b)
-  parent:remove(swap_a)
-  parent:remove(swap_b)
-  return b
-end
-
 local function leaderboard(scene, root)
-  local handle = shapes.Shape({
-    x = 0,
-    y = 144 / 2,
-  })
+  local handle = shapes.Shape()
   root:add_child(handle)
 
-  local board = shapes.Shape()
+  local positions = {}
+  for i = 1, count do
+    positions[i] = i
+  end
+  local between = signal(0)
+  local positions_signal = signal(positions)
+  local positions_signal_new = signal(positions)
+  local start = signal(1)
+
+  local board = shapes.Shape({
+    x = -256 - (start - 1.5) * 71,
+    y = 144 / 2
+  })
   handle:add_child(board)
 
-  local indices = {}
-  for i = 1, count do
-    indices[i] = i
+  local function pos(pos)
+    return vec2((pos - 1) * 71, 0)
   end
-  local indices_signal = signal(indices)
+
+  local handles = {}
+
+  for i = 1, count do
+    local playback = Playback.new({
+      x = -signal.me.width / 2,
+      y = -signal.me.height / 2
+    }, i, 1)
+
+    local position = signal(function() return positions_signal_new()[i] end)
+
+    local traits = grid(2, #trait_names + 2, 140, 144 / 2, function(x, y)
+      if y < 3 and x == 2 then
+        return shapes.Shape()
+      end
+
+      if y == 1 then
+        return shapes.Text(nil, "#" .. position, 1.5)
+      elseif y == 2 then
+        return shapes.Text(nil, "MARIO #" .. i)
+      else
+        if x == 1 then
+          return shapes.Text(nil, trait_names[y - 2])
+        else
+          return personality(i, trait_names[y - 2])
+        end
+      end
+    end)
+    traits.pos({
+      x = -9,
+      y = 68,
+    })
+    traits.scale(vec2(0.3))
+    playback:add_child(traits)
+
+    playback.visible(function()
+      local table = between() < 0.5 and positions_signal() or positions_signal_new()
+      return table[i] >= math.floor(start()) and table[i] < math.ceil(start()) + 8
+    end)
+
+    local handle = shapes.Shape(function()
+      local oldpos = positions_signal()[i]
+      local newpos = positions_signal_new()[i]
+      local old, new
+      if between() < 0.5 then
+        old = pos(oldpos)
+        new = old + vec2(512 / 7, 0) * (newpos - oldpos)
+      else
+        new = pos(newpos)
+        old = new - vec2(512 / 7, 0) * (newpos - oldpos)
+      end
+      return tweens.interp.linear(old, new, between())
+    end)
+    handle:add_child(playback)
+    board:add_child(handle)
+
+    table.insert(handles, handle)
+  end
 
   scene:parallel(function()
     -- refresh leaderboard every second
-    local function swap(a, b)
-      local ia = indices[a]
-      local ib = indices[b]
-
-      if ia == nil or ib == nil then
-        return false
-      end
-
-      local sa = marios()[ia].fitness
-      local sb = marios()[ib].fitness
-
-      if sa < sb then
-        indices[a], indices[b] = ib, ia
-        return true
-      end
-
-      return false
-    end
-
     while true do
-      scene:wait(0.1)
-
+      local positions = {}
+      local ms = marios()
       for i = 1, count do
-        local ci = i
-        ::redo::
-        if swap(ci, ci+1) then
-          ci = ci - 1
-          goto redo
+        local me = ms[i].fitness
+        local p = 1
+
+        for j = 1, count do
+          if ms[j].fitness > me or (j < i and ms[j].fitness == me) then
+            p = p + 1
+          end
         end
+
+        table.insert(positions, p)
       end
 
-      indices_signal(indices)
+      positions_signal_new(positions)
+      -- between(1, 0.2)
+      positions_signal(positions)
+      between(0)
+      scene:wait(0.3)
     end
   end)
 
-  local start = 1
-
   while true do
-    board = swap(handle, board, grid(7, 2, 512, 137, function(x, y)
-      local position = start + (x - 1) + (y - 1) * 7
-      if position > count then
-        return shapes.Shape()
-      else
-        local index = function() return indices_signal()[position] end
-        local playback = Playback.new({
-          x = -signal.me.width / 2,
-          y = -signal.me.height / 2
-        }, index, 1)
-
-        local traits = grid(2, #trait_names + 2, 140, 144 / 2, function(x, y)
-          if y < 3 and x == 2 then
-            return shapes.Shape()
-          end
-
-          if y == 1 then
-            return shapes.Text(nil, "#" .. position, 1.5)
-          elseif y == 2 then
-            return shapes.Text(nil, "MARIO #" .. index)
-          else
-            if x == 1 then
-              return shapes.Text(nil, trait_names[y - 2])
-            else
-              return personality(index, trait_names[y - 2])
-            end
-          end
-        end)
-        traits.pos({
-          x = -5,
-          y = 15,
-        })
-        traits.scale(vec2(0.3))
-        playback:add_child(traits)
-
-        return playback
-      end
-    end), vec2(0, -144), 0)
-
-    scene:wait(5)
-
-    start = start + 14
-    if start > count then
-      start = 1
+    start(start() + 1, 1.5)
+    if start() > count then
+      start(-7)
     end
   end
 end

@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    fs::read,
     sync::{
         atomic::{AtomicU8, Ordering},
         mpsc, Arc, Mutex,
@@ -9,6 +10,7 @@ use std::{
 };
 
 use fastnes::{
+    cart::{Cartridge, NROM},
     input::Controllers,
     nes::NES,
     ppu::{Color, DrawOptions, FastPPU},
@@ -67,7 +69,7 @@ struct Mario {
     last_input: u8,
     next_state: u32,
 
-    states: VecDeque<NES>,
+    states: VecDeque<NES<NROM, FastPPU>>,
 }
 
 fn next_input(prev: u8, personality: &Personality) -> u8 {
@@ -106,7 +108,7 @@ impl PartialOrd for Fitness {
     }
 }
 
-fn fitness(nes: &mut NES) -> Fitness {
+fn fitness(nes: &mut NES<NROM, FastPPU>) -> Fitness {
     let level_pos = u16::from(nes.read(0x6d)) << 8 // screen page
                     | u16::from(nes.read(0x86)); // screen x
 
@@ -138,7 +140,11 @@ fn fitness(nes: &mut NES) -> Fitness {
     }
 }
 
-fn scroll(nes: &mut NES) -> u32 {
+fn victory(nes: &mut NES<NROM, FastPPU>) -> bool {
+    nes.read(0x0770) == 2
+}
+
+fn scroll(nes: &mut NES<NROM, FastPPU>) -> u32 {
     let level_pos = u16::from(nes.read(0x071a)) << 8 // screen page
                     | u16::from(nes.read(0x071c)); // screen x
 
@@ -152,7 +158,7 @@ fn scroll(nes: &mut NES) -> u32 {
 fn next_frame(mario: &mut Mario) {
     let input = Arc::new(AtomicU8::new(0));
     let mut nes = mario.states.pop_back().unwrap();
-    nes.set_controllers(Controllers::standard(&input));
+    nes.controllers = Controllers::standard(&input);
     let mut score = fitness(&mut nes);
 
     // get new inputs
@@ -164,21 +170,26 @@ fn next_frame(mario: &mut Mario) {
             } else {
                 0
             };
-            let frame = nes.frame_no() - frames;
-            while nes.frame_no() >= frame && !mario.states.is_empty() {
+            let frame = nes.frame_number() - frames;
+            while nes.frame_number() >= frame && !mario.states.is_empty() {
                 nes = mario.states.pop_back().unwrap();
             }
-            nes.set_controllers(Controllers::standard(&input));
+            nes.controllers = Controllers::standard(&input);
             score = fitness(&mut nes);
 
             mario.next_state = mario.personality.confident;
         } else if mario.next_state == 0 {
-            mario.states.push_back(nes.clone());
-            mario.next_state = mario.personality.confident;
-
-            if mario.states.len() > 360 {
-                mario.states.pop_front();
+            // remove previous states if we just cleared a level
+            if victory(&mut nes) {
+                mario.states.clear();
+            } else {
+                mario.states.push_back(nes.clone());
+                if mario.states.len() > 400 {
+                    mario.states.pop_front();
+                }
             }
+
+            mario.next_state = mario.personality.confident;
         } else {
             mario.next_state -= 1;
         }
@@ -211,7 +222,7 @@ fn next_frame(mario: &mut Mario) {
 
                 // run
                 let mut cloned = nes.clone();
-                cloned.set_controllers(Controllers::standard(&input));
+                cloned.controllers = Controllers::standard(&input);
 
                 for item in list.iter().copied() {
                     input.store(item, Ordering::Relaxed);
@@ -312,8 +323,8 @@ fn main() -> Result<()> {
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             ]
             .into(),
-            states: vec![NES::read_ines(
-                "rom/smb.nes",
+            states: vec![NES::new(
+                NROM::from_ines(read("rom/smb.nes").unwrap()),
                 Controllers::disconnected(),
                 FastPPU::new(),
             )]
@@ -463,7 +474,7 @@ fn animate(
                 let image = {
                     let mario = marios[instance - 1].lock().unwrap();
                     let nes = &mario.states[mario.states.len() - 1];
-                    let frame = nes.frame(DrawOptions::Background);
+                    let frame = nes.draw_frame(DrawOptions::Background);
 
                     let img = Img::new(unsafe { as_rgba(&frame) }, 256, 240);
                     screen
@@ -503,7 +514,7 @@ fn animate(
                 let image = {
                     let mario = marios[instance - 1].lock().unwrap();
                     let nes = &mario.states[mario.states.len() - 1];
-                    let frame = nes.frame(DrawOptions::Sprites);
+                    let frame = nes.draw_frame(DrawOptions::Sprites);
 
                     let img = Img::new(unsafe { as_rgba(&frame) }, 256, 240);
                     screen
