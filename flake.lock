@@ -1,81 +1,24 @@
 {
   "nodes": {
-    "astapkgs": {
-      "inputs": {
-        "fenix": "fenix",
-        "nixpkgs": "nixpkgs"
-      },
-      "locked": {
-        "lastModified": 1688989586,
-        "narHash": "sha256-63SnI2Tp6PblfI4WyHgKvWLM/e9zYKoLoGqNW6K02W4=",
-        "owner": "Astavie",
-        "repo": "astapkgs",
-        "rev": "f97937194c96385d56a3a277333bbe7749d61362",
-        "type": "github"
-      },
-      "original": {
-        "owner": "Astavie",
-        "repo": "astapkgs",
-        "type": "github"
-      }
-    },
-    "fenix": {
-      "inputs": {
-        "nixpkgs": [
-          "astapkgs",
-          "nixpkgs"
-        ],
-        "rust-analyzer-src": "rust-analyzer-src"
-      },
-      "locked": {
-        "lastModified": 1687674253,
-        "narHash": "sha256-wXpJrXGIcGbwyxF1ky1VyPg8YoVuAkoj57+kSRJ5yek=",
-        "owner": "nix-community",
-        "repo": "fenix",
-        "rev": "447bb10577505fb657724a7c02d406bfdec431ed",
-        "type": "github"
-      },
-      "original": {
-        "owner": "nix-community",
-        "repo": "fenix",
-        "type": "github"
-      }
-    },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1688986784,
-        "narHash": "sha256-wX5oitbIt5K8TP9K/wj3nvZc+4WhYIGKlHExfpald5U=",
-        "owner": "Astavie",
+        "lastModified": 1703438236,
+        "narHash": "sha256-aqVBq1u09yFhL7bj1/xyUeJjzr92fXVvQSSEx6AdB1M=",
+        "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "f566f6744d799b1e189f613df5eaf2ac798d608b",
+        "rev": "5f64a12a728902226210bf01d25ec6cbb9d9265b",
         "type": "github"
       },
       "original": {
-        "owner": "Astavie",
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
         "repo": "nixpkgs",
         "type": "github"
       }
     },
     "root": {
       "inputs": {
-        "astapkgs": "astapkgs"
-      }
-    },
-    "rust-analyzer-src": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1687543309,
-        "narHash": "sha256-8oHRXbZ/G3JNtNgdgmZbG+0njutvKYugXxqTwCfeDHM=",
-        "owner": "rust-lang",
-        "repo": "rust-analyzer",
-        "rev": "6ba2590541fb284555596e8b7967b05aaa576c22",
-        "type": "github"
-      },
-      "original": {
-        "owner": "rust-lang",
-        "ref": "nightly",
-        "repo": "rust-analyzer",
-        "type": "github"
+        "nixpkgs": "nixpkgs"
       }
     }
   },

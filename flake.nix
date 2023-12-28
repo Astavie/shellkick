@@ -1,27 +1,41 @@
 {
-  inputs.astapkgs.url = "github:Astavie/astapkgs";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
-  outputs = { self, astapkgs }: astapkgs.lib.package {
 
-    # package = pkgs: with pkgs; ...
+  outputs = { self, nixpkgs }:
+    let
+      supportedSystems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
+      forEachSupportedSystem = f: nixpkgs.lib.genAttrs supportedSystems (system: f {
+        pkgs = import nixpkgs { inherit system; };
+      });
+    in
+    {
+      devShells = forEachSupportedSystem ({ pkgs }: {
+        default = pkgs.mkShell rec {
+          packages = with pkgs; [
+            rustc
+            cargo
+            rustfmt
 
-    devShell = pkgs: with pkgs; mkShell {
+            bacon
+            cargo-deny
+            cargo-edit
+            cargo-watch
+            rust-analyzer
+          ];
 
-      buildInputs = [
-        dev.rust-nightly
-      ];
+          buildInputs = with pkgs; [
+            xorg.libX11
+            xorg.libXcursor
+            xorg.libXrandr
+            xorg.libXi
+            libxkbcommon
+            libGL
+            fontconfig
+          ];
 
-      LD_LIBRARY_PATH = lib.makeLibraryPath [
-        xorg.libX11
-        xorg.libXcursor
-        xorg.libXrandr
-        xorg.libXi
-        libxkbcommon
-        libGL
-        fontconfig
-      ];
-
+          LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath buildInputs}";
+        };
+      });
     };
-
-  } [ "x86_64-linux" ];
 }
